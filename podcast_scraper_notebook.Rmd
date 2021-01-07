@@ -1,0 +1,106 @@
+---
+title: "podcast_scraper_notebook"
+output: html_notebook
+---
+
+```{r packages}
+
+library(dplyr)
+library(lubridate)
+library(rvest)
+library(stringr)
+library(textstem)
+library(tibble)
+library(tm)
+
+packages <- c('dplyr', 'lubridate', 'rvest', 'stringr', 'textstem', 'tibble', 'tm')
+loaded_packages <- sapply(packages, require, character.only = TRUE)
+
+loaded_packages
+```
+```{r initiators}
+# define url for RSS feed XML file 
+URL <- 'http://feeds.megaphone.fm/stuffyoushouldknow.xml'
+
+# define XML tags of interest
+css_tags <- c('title', 'pubDate', 'description', 'itunes\\:duration') 
+col_names <- c('title', 'date', 'description', 'duration') 
+
+# load XML feed and extract items nodes
+podcast_feed <- read_xml(URL)
+items <- xml_nodes(podcast_feed, 'item')
+items
+```
+
+```{r extract elements}
+# extracts from an item node the content defined by the css_tags
+extract_element <- function(item, css_tags) {
+                      element <- xml_node(item, css_tags) %>% xml_text
+                      element
+  
+}
+```
+
+```{r create data frame}
+podcast_df <- sapply(css_tags, function(x) { 
+          extract_element(items, x)}
+          ) %>% as_tibble()
+```
+
+``` {r preprocess dates and duration}
+podcast_df <- podcast_df %>%
+                mutate(date = stringr::str_sub(date, 5, 16)) %>% # extract characters which represent the date only
+                mutate(date = lubridate::dmy(date), # convert to date 
+                       duration = as.numeric(duration)) # convert to numeric
+
+View(podcast_df)
+```
+
+```{r create custom new columns}
+# add columns to indicate whether episode is 'replay'(previously aired) or not and if it's a 'short stuff' type episode 
+podcast_df <- podcast_df %>%
+                mutate(episode_type = if_else(stringr::str_detect(title, "Short Stuff"), "Short", "Normal"),
+                       initial_release = if_else(stringr::str_detect(title, "SYSK Selects|SYSK Distraction Playlist"), FALSE, TRUE ))
+```
+
+```{r preprocess description}
+generic_string = "\n Learn more about your ad-choices at https://news.iheart.com/podcast-advertisers"
+podcast_df <- podcast_df %>%
+                mutate(description = stringr::str_remove(description, generic_string))
+
+# function to strip all non-alphanumeric characters including punctuation
+removeNonAlnum <- function(x){
+  gsub("[^[:alnum:]^[:space:]]"," ", x)
+}
+
+# function to remove any words with 2 characters or less 
+removeShortWords <- function(x){
+  gsub('\\b\\w{1,2}\\b','', x)
+}
+
+# define stop words including custom stop words
+custom_stopwords = c( "sysk", "stuff", "you", "episode", "week", "tune", "",
+                      "today", "podcast", "howstuffworks", "com", "listen",
+                     "should", "know", "learn", "josh", "chuck")
+
+# create corpus vector of all descriptions and apply preprocessing steps 
+corpus <- Corpus(VectorSource(podcast_df$description))
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, content_transformer(removeNonAlnum))
+corpus <- tm_map(corpus, content_transformer(removeShortWords))
+corpus <- tm_map(corpus, removeWords, c(stopwords('english'), custom_stopwords))
+corpus <- tm_map(corpus, textstem::lemmatize_strings)
+corpus <- tm_map(corpus, stripWhitespace)
+
+# create column to store preprocessed tokens
+podcast_df <- podcast_df %>%
+                mutate(tokens = sapply(corpus, identity))
+
+
+View(podcast_df)
+```
+
+```{r output}
+write.csv(podcast_df,"preprocessed_podcast_episodes.csv", row.names = FALSE, fileEncoding = "UTF-8")
+```
